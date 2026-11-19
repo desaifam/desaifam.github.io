@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3b5bdb">
+<title>Allowance</title>
+<style>
+:root{--bg:#faf8f4;--card:#fff;--tx:#1f2430;--mut:#6b7280;--bd:#e5e1d8;--pri:#3b5bdb;--save:#2f9e44;--spend:#e8590c;--invest:#7048e8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#16181d;--card:#21242b;--tx:#eceef2;--mut:#9aa1ad;--bd:#343842;--pri:#7c93ff;--save:#51cf66;--spend:#ff922b;--invest:#a78bfa;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:4px 0 14px}
+h2{font-size:1.1rem;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.kids{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:18px}
+.kidbtn{background:var(--card);border:2px solid var(--bd);border-radius:16px;padding:22px 10px;font-size:1.2rem;font-weight:600;color:var(--tx)}
+.kidbtn:active{border-color:var(--pri)}
+button{font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.btn{border:0;background:var(--pri);color:#fff;border-radius:10px;padding:10px 14px}
+.btn.alt{background:var(--card);color:var(--tx);border:1px solid var(--bd)}
+.btn.danger{background:var(--card);color:var(--spend);border:1px solid var(--spend)}
+.link{background:none;border:0;color:var(--pri);padding:6px 0;font-size:.95rem}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1;min-width:90px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+label{display:block;font-size:.85rem;color:var(--mut);margin:8px 0 3px}
+input,select{width:100%;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)}
+.jars{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}
+.jar{background:var(--card);border:1px solid var(--bd);border-top:5px solid var(--c);border-radius:12px;padding:12px 6px;text-align:center}
+.jar .n{color:var(--mut);font-size:.85rem}.jar .v{font-size:1.25rem;font-weight:700;color:var(--c)}
+.total{font-size:2rem;font-weight:700}.total small{display:block;font-size:.85rem;font-weight:400;color:var(--mut)}
+.log{list-style:none;margin:0;padding:0}
+.log li{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd);font-size:.95rem}
+.log li:last-child{border:0}.d{color:var(--mut);font-size:.8rem}
+.pos{color:var(--save)}.neg{color:var(--spend)}
+.msg{min-height:1.3em;margin:8px 0 0;font-size:.95rem}.msg.err{color:var(--spend)}.msg.ok{color:var(--save)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.mut{color:var(--mut)}
+details summary{cursor:pointer;color:var(--pri);margin-top:6px}
+</style></head>
+<body><main id="app"></main>
+<script src="config.js"></script>
+<script>
+"use strict";
+const C = window.CONFIG || {};
+const JARS = [["save","Save","var(--save)"],["spend","Spend","var(--spend)"],["invest","Invest","var(--invest)"]];
+const jarName = id => (JARS.find(j => j[0] === id) || [0, id])[1];
+const ERR = {
+  bad_pin:"That PIN isn’t right.", locked:"Too many wrong tries. Try again in 15 minutes.",
+  insufficient:"There isn’t enough in that jar.", pin_format:"A PIN must be 4 to 8 digits.",
+  bad_input:"Please check the amount and try again.", already_set:"A parent PIN already exists.",
+  already_added:"Weekly allowance was already added in the last 5 days.", no_parent_pin:"Set up the parent PIN first.",
+  not_found:"That child wasn’t found."
+};
+const money = n => (n < 0 ? "−" : "") + "$" + Math.abs(Number(n) || 0).toFixed(2);
+
+/* ---------- tiny DOM helper (text only, never innerHTML) ---------- */
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e[k] = v;
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const x of kids.flat()) if (x != null && x !== false) e.append(x.nodeType ? x : document.createTextNode(String(x)));
+  return e;
+}
+const pinInput = ph => h("input", {type:"password", inputmode:"numeric", autocomplete:"off", maxlength:"8", placeholder:ph || "PIN"});
+const numInput = ph => h("input", {type:"number", min:"0", step:"0.01", inputmode:"decimal", placeholder:ph || "0.00"});
+const field = (l, n) => h("div", {}, h("label", {}, l), n);
+
+/* ---------- server calls ---------- */
+async function rpc(fn, args) {
+  if (!C.SUPABASE_URL || C.SUPABASE_URL.includes("YOUR-PROJECT")) throw new Error("not_configured");
+  const r = await fetch(C.SUPABASE_URL + "/rest/v1/rpc/" + fn, {
+    method: "POST", headers: {"Content-Type":"application/json", apikey: C.SUPABASE_KEY}, body: JSON.stringify(args || {})
+  });
+  if (!r.ok) throw new Error("http_" + r.status);
+  return r.json();
+}
+const errText = r => r && r.error ? (ERR[r.error] || "Something went wrong (" + r.error + ").") : "Something went wrong.";
+
+/* ---------- state (PINs live only in memory) ---------- */
+let S = { view:"home", kids:[], hasParent:true, kid:null, kidPin:null, kidData:null, parentPin:null, parent:null, panel:null, mode:null, msg:null, busy:false };
+let idle;
+function resetIdle() {
+  clearTimeout(idle);
+  if (S.kidPin || S.parentPin) idle = setTimeout(() => { S.kidPin = S.parentPin = S.kid = S.kidData = S.parent = null; S.view = "home"; S.panel = S.mode = null; S.msg = null; load(); }, 5 * 60 * 1000);
+}
+["pointerdown","keydown"].forEach(ev => addEventListener(ev, resetIdle));
+
+function say(text, ok) { S.msg = text ? {text, ok:!!ok} : null; }
+function msgEl() { return h("div", {class:"msg" + (S.msg ? (S.msg.ok ? " ok" : " err") : "")}, S.msg ? S.msg.text : ""); }
+async function act(fn) {
+  if (S.busy) return;
+  S.busy = true; say(null);
+  try { await fn(); }
+  catch (e) { say(e.message === "not_configured" ? "The app isn’t connected to its database yet — see README step 3." : "Couldn’t reach the server. Check your connection and try again."); }
+  S.busy = false; render();
+}
+
+async function load() {
+  await act(async () => { const r = await rpc("list_kids"); S.kids = r.kids || []; S.hasParent = !!r.has_parent; });
+}
+async function refreshKid() { const r = await rpc("kid_overview", {p_kid:S.kid.id, p_pin:S.kidPin}); if (r.ok) S.kidData = r; else { say(errText(r)); S.view = "home"; S.kidPin = null; } }
+async function refreshParent() { const r = await rpc("parent_overview", {p_pin:S.parentPin}); if (r.ok) S.parent = r; else { say(errText(r)); S.view = "home"; S.parentPin = null; } }
+
+/* ---------- views ---------- */
+function render() {
+  const app = document.getElementById("app"); app.textContent = "";
+  const v = {home:vHome, kidpin:vKidPin, kid:vKid, parentpin:vParentPin, parent:vParent}[S.view];
+  app.append(h("h1", {}, "💰 Allowance"), v());
+}
+
+function vHome() {
+  const out = h("div");
+  if (!S.hasParent) return out.append(vSetup()), out;
+  out.append(h("p", {class:"mut"}, "Who’s checking their money?"));
+  const g = h("div", {class:"kids"});
+  const seen = {}, total = {};
+  S.kids.forEach(k => total[k.initial] = (total[k.initial] || 0) + 1);
+  S.kids.forEach(k => {
+    seen[k.initial] = (seen[k.initial] || 0) + 1;
+    k.label = total[k.initial] > 1 ? k.initial + seen[k.initial] : k.initial;   // two kids with the same initial: S1, S2
+    g.append(h("button", {class:"kidbtn", onclick:() => { S.kid = k; S.view = "kidpin"; say(null); render(); }}, k.label));
+  });
+  out.append(g);
+  if (!S.kids.length) out.append(h("p", {class:"mut"}, "No kids added yet. A parent can add them below."));
+  out.append(h("button", {class:"link", onclick:() => { S.view = "parentpin"; say(null); render(); }}, "Parent area →"), msgEl());
+  return out;
+}
+
+function vSetup() {
+  const p1 = pinInput("Choose a parent PIN"), p2 = pinInput("Type it again");
+  return h("div", {class:"card"}, h("h2", {}, "First-time setup"),
+    h("p", {class:"mut"}, "Choose a PIN only the parents know (6+ digits recommended). It protects adding money and changing settings."),
+    field("Parent PIN", p1), field("Confirm PIN", p2),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => {
+      if (p1.value !== p2.value) { say("The two PINs don’t match."); return render(); }
+      act(async () => { const r = await rpc("parent_setup", {p_pin:p1.value}); if (!r.ok) return say(errText(r)); S.hasParent = true; say("Parent PIN saved. Now sign in under Parent area to add your kids.", true); });
+    }}, "Save PIN")), msgEl());
+}
+
+function vKidPin() {
+  const p = pinInput("Your PIN");
+  const go = () => act(async () => {
+    S.kidPin = p.value; const r = await rpc("kid_overview", {p_kid:S.kid.id, p_pin:S.kidPin});
+    if (!r.ok) { S.kidPin = null; return say(errText(r)); }
+    S.kidData = r; S.view = "kid"; S.mode = null; resetIdle();
+  });
+  p.onkeydown = e => { if (e.key === "Enter") go(); };
+  setTimeout(() => p.focus(), 0);
+  return h("div", {class:"card"}, h("h2", {}, "Enter your PIN"), field("PIN for " + S.kid.label, p),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:go}, "Open"), h("button", {class:"btn alt", onclick:() => { S.view = "home"; say(null); render(); }}, "Back")), msgEl());
+}
+
+function jarsEl(b) {
+  const g = h("div", {class:"jars"});
+  JARS.forEach(([id, n, c]) => { const d = h("div", {class:"jar"}, h("div", {class:"n"}, n), h("div", {class:"v"}, money(b[id]))); d.style.setProperty("--c", c); g.append(d); });
+  return g;
+}
+function logEl(rows) {
+  const ul = h("ul", {class:"log"});
+  if (!rows.length) ul.append(h("li", {class:"d"}, "Nothing yet."));
+  rows.forEach(e => ul.append(h("li", {}, h("div", {}, h("div", {}, e.note || e.kind), h("div", {class:"d"}, jarName(e.jar) + " · " + new Date(e.created_at).toLocaleDateString(undefined, {month:"short", day:"numeric"}))),
+    h("div", {class:Number(e.amount) < 0 ? "neg" : "pos"}, (Number(e.amount) < 0 ? "−" : "+") + money(Math.abs(e.amount)).replace("−", "")))));
+  return ul;
+}
+const jarSelect = skip => { const s = h("select"); JARS.forEach(([id, n]) => { if (id !== skip) s.append(h("option", {value:id}, n)); }); return s; };
+
+function vKid() {
+  const d = S.kidData, b = d.balances, tot = Number(b.save) + Number(b.spend) + Number(b.invest);
+  const out = h("div");
+  out.append(h("div", {class:"top"}, h("h2", {}, d.name), h("button", {class:"link", onclick:() => { S.kidPin = S.kid = S.kidData = null; S.view = "home"; S.mode = null; say(null); load(); }}, "Done")),
+    h("div", {class:"total"}, money(tot), h("small", {}, "total across all three jars")), jarsEl(b),
+    h("div", {class:"actions"},
+      h("button", {class:"btn", onclick:() => { S.mode = S.mode === "spend" ? null : "spend"; say(null); render(); }}, "🛍 I spent money"),
+      h("button", {class:"btn alt", onclick:() => { S.mode = S.mode === "move" ? null : "move"; say(null); render(); }}, "↔ Move money")));
+  if (S.mode === "spend") {
+    const j = jarSelect(); j.value = "spend"; const a = numInput(), n = h("input", {placeholder:"What was it for?", maxlength:"100"});
+    out.append(h("div", {class:"card"}, h("h2", {}, "What did you spend?"), field("From which jar?", j), field("Amount ($)", a), field("Note", n),
+      h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+        const r = await rpc("kid_spend", {p_kid:S.kid.id, p_pin:S.kidPin, p_jar:j.value, p_amount:parseFloat(a.value), p_note:n.value});
+        if (!r.ok) return say(errText(r)); S.mode = null; await refreshKid(); say("Saved!", true);
+      })}, "Save"))));
+  }
+  if (S.mode === "move") {
+    const f = jarSelect(); const t = jarSelect(); t.value = "save"; const a = numInput();
+    out.append(h("div", {class:"card"}, h("h2", {}, "Move money between jars"), h("div", {class:"row"}, field("From", f), field("To", t)), field("Amount ($)", a),
+      h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+        const r = await rpc("kid_move", {p_kid:S.kid.id, p_pin:S.kidPin, p_from:f.value, p_to:t.value, p_amount:parseFloat(a.value)});
+        if (!r.ok) return say(errText(r)); S.mode = null; await refreshKid(); say("Moved!", true);
+      })}, "Move"))));
+  }
+  out.append(msgEl(), h("div", {class:"card"}, h("h2", {}, "History"), logEl(d.history)));
+  return out;
+}
+
+function vParentPin() {
+  const p = pinInput("Parent PIN");
+  const go = () => act(async () => {
+    S.parentPin = p.value; const r = await rpc("parent_overview", {p_pin:S.parentPin});
+    if (!r.ok) { S.parentPin = null; return say(errText(r)); }
+    S.parent = r; S.view = "parent"; S.panel = null; resetIdle();
+  });
+  p.onkeydown = e => { if (e.key === "Enter") go(); };
+  setTimeout(() => p.focus(), 0);
+  return h("div", {class:"card"}, h("h2", {}, "Parent area"), field("Parent PIN", p),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:go}, "Unlock"), h("button", {class:"btn alt", onclick:() => { S.view = "home"; say(null); render(); }}, "Back")), msgEl());
+}
+
+function vParent() {
+  const out = h("div"), kids = S.parent.kids;
+  out.append(h("div", {class:"top"}, h("h2", {}, "Parent area"), h("button", {class:"link", onclick:() => { S.parentPin = S.parent = null; S.view = "home"; S.panel = null; say(null); load(); }}, "Lock")));
+  out.append(h("div", {class:"actions"},
+    h("button", {class:"btn", disabled:!kids.length, onclick:() => act(async () => {
+      let done = 0, skipped = [];
+      for (const k of kids) { const r = await rpc("parent_weekly", {p_pin:S.parentPin, p_kid:k.id, p_force:false}); if (r.ok) done++; else if (r.error === "already_added") skipped.push(k.name); else return say(errText(r)); }
+      await refreshParent(); say("Added weekly allowance for " + done + (done === 1 ? " child" : " children") + (skipped.length ? ". Already added recently for: " + skipped.join(", ") + "." : "."), true);
+    })}, "➕ Add weekly allowance (all)"),
+    h("button", {class:"btn alt", onclick:() => { S.panel = {t:"edit", kid:null}; say(null); render(); }}, "+ Add child"),
+    h("button", {class:"btn alt", onclick:() => { S.panel = {t:"pin"}; say(null); render(); }}, "Change parent PIN")));
+  if (S.panel && S.panel.t === "pin") out.append(pFormPin());
+  if (S.panel && S.panel.t === "edit") out.append(pFormEdit(S.panel.kid));
+  out.append(msgEl());
+  kids.forEach(k => {
+    const b = k.balances, w = k.weekly, wk = Number(w.save) + Number(w.spend) + Number(w.invest);
+    const card = h("div", {class:"card"}, h("h2", {}, k.name), jarsEl(b), h("div", {class:"d"}, "Weekly: " + money(wk) + " (Save " + money(w.save) + " · Spend " + money(w.spend) + " · Invest " + money(w.invest) + ")"),
+      h("div", {class:"actions"},
+        h("button", {class:"btn", onclick:() => { S.panel = {t:"add", kid:k}; say(null); render(); }}, "💵 Add money"),
+        h("button", {class:"btn alt", onclick:() => act(async () => {
+          let r = await rpc("parent_weekly", {p_pin:S.parentPin, p_kid:k.id, p_force:false});
+          if (!r.ok && r.error === "already_added") { if (!confirm("Weekly allowance was already added for " + k.name + " in the last 5 days. Add it again?")) return; r = await rpc("parent_weekly", {p_pin:S.parentPin, p_kid:k.id, p_force:true}); }
+          if (!r.ok) return say(errText(r)); await refreshParent(); say("Added weekly allowance for " + k.name + ".", true);
+        })}, "Weekly"),
+        h("button", {class:"btn alt", onclick:() => { S.panel = {t:"edit", kid:k}; say(null); render(); }}, "Edit")));
+    if (S.panel && S.panel.t === "add" && S.panel.kid.id === k.id) card.append(pFormAdd(k));
+    card.append(h("details", {}, h("summary", {}, "History"), logEl(k.history)));
+    out.append(card);
+  });
+  return out;
+}
+
+function pFormAdd(k) {
+  const j = jarSelect(), a = numInput(), n = h("input", {placeholder:"Gift, chores, etc.", maxlength:"100"});
+  return h("div", {class:"card"}, h("h2", {}, "Add money for " + k.name), field("Into which jar?", j), field("Amount ($)", a), field("Note", n),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+      const r = await rpc("parent_add", {p_pin:S.parentPin, p_kid:k.id, p_jar:j.value, p_amount:parseFloat(a.value), p_note:n.value});
+      if (!r.ok) return say(errText(r)); S.panel = null; await refreshParent(); say("Added " + money(a.value) + " to " + k.name + "’s " + jarName(j.value) + " jar.", true);
+    })}, "Save"), h("button", {class:"btn alt", onclick:() => { S.panel = null; render(); }}, "Cancel")));
+}
+
+function pFormEdit(k) {
+  const nm = h("input", {value:k ? k.name : "", maxlength:"40", placeholder:"Name"});
+  const ins = {}; const r = h("div", {class:"row"});
+  JARS.forEach(([id, n]) => { const i = numInput(); i.value = k ? k.weekly[id] : ""; ins[id] = i; r.append(field("Weekly " + n, i)); });
+  const kp = pinInput(k ? "New PIN (leave blank to keep)" : "Choose a PIN (4–8 digits)");
+  const box = h("div", {class:"card"}, h("h2", {}, k ? "Edit " + k.name : "Add a child"), field("Name", nm), r, field(k ? "Kid’s PIN" : "Kid’s PIN (they’ll use this)", kp),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+      const res = await rpc("parent_save_kid", {p_pin:S.parentPin, p_kid:k ? k.id : null, p_name:nm.value, p_save:parseFloat(ins.save.value) || 0, p_spend:parseFloat(ins.spend.value) || 0, p_invest:parseFloat(ins.invest.value) || 0, p_kid_pin:kp.value || null});
+      if (!res.ok) return say(errText(res)); S.panel = null; await refreshParent(); say("Saved.", true);
+    })}, "Save"), h("button", {class:"btn alt", onclick:() => { S.panel = null; render(); }}, "Cancel"),
+    k && h("button", {class:"btn danger", onclick:() => { if (!confirm("Delete " + k.name + " and all their history? This can’t be undone.")) return; act(async () => {
+      const res = await rpc("parent_delete_kid", {p_pin:S.parentPin, p_kid:k.id}); if (!res.ok) return say(errText(res)); S.panel = null; await refreshParent(); say("Deleted.", true);
+    }); }}, "Delete child")));
+  return box;
+}
+
+function pFormPin() {
+  const o = pinInput("Current PIN"), n = pinInput("New PIN");
+  return h("div", {class:"card"}, h("h2", {}, "Change parent PIN"), field("Current PIN", o), field("New PIN (4–8 digits)", n),
+    h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+      const r = await rpc("parent_change_pin", {p_pin:o.value, p_new:n.value}); if (!r.ok) return say(errText(r));
+      S.parentPin = n.value; S.panel = null; say("PIN changed.", true);
+    })}, "Change PIN"), h("button", {class:"btn alt", onclick:() => { S.panel = null; render(); }}, "Cancel")));
+}
+
+render(); load();
+</script></body></html>
