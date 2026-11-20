@@ -277,5 +277,28 @@ function pFormPin() {
     })}, "Change PIN"), h("button", {class:"btn alt", onclick:() => { S.panel = null; render(); }}, "Cancel")));
 }
 
+/* ---------- auto-refresh: re-check balances while signed in ---------- */
+// Skipped while a form is open or a request is running, so it never wipes what someone is typing.
+// Redraws only when the data actually changed. Does not count as activity for the 5-minute auto-lock.
+async function tick() {
+  if (document.hidden || S.busy || S.mode || S.panel) return;
+  const v = S.view;
+  try {
+    if (v === "kid" && S.kidPin) {
+      const r = await rpc("kid_overview", {p_kid:S.kid.id, p_pin:S.kidPin});
+      if (S.view !== v || S.busy || S.mode || S.panel) return;
+      if (!r.ok) { const m = errText(r); S.kidPin = S.kidData = null; S.view = "home"; await load(); say(m + " Please sign in again."); render(); return; }
+      if (JSON.stringify(r) !== JSON.stringify(S.kidData)) { S.kidData = r; render(); }
+    } else if (v === "parent" && S.parentPin) {
+      const r = await rpc("parent_overview", {p_pin:S.parentPin});
+      if (S.view !== v || S.busy || S.mode || S.panel) return;
+      if (!r.ok) { const m = errText(r); S.parentPin = S.parent = null; S.view = "home"; await load(); say(m + " Please sign in again."); render(); return; }
+      if (JSON.stringify(r) !== JSON.stringify(S.parent)) { S.parent = r; render(); }
+    }
+  } catch (e) { /* offline or server hiccup: try again next time */ }
+}
+setInterval(tick, 20000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
 render(); load();
 </script></body></html>
