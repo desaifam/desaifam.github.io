@@ -185,9 +185,11 @@ function vKid() {
       })}, "Save"))));
   }
   if (S.mode === "move") {
-    const f = jarSelect(); const t = jarSelect(); t.value = "save"; const a = numInput();
+    const f = jarSelect(); f.value = "spend"; const t = jarSelect(); t.value = "save"; const a = numInput();
     out.append(h("div", {class:"card"}, h("h2", {}, "Move money between jars"), h("div", {class:"row"}, field("From", f), field("To", t)), field("Amount ($)", a),
       h("div", {class:"actions"}, h("button", {class:"btn", onclick:() => act(async () => {
+        if (f.value === t.value) return say("Pick two different jars.");
+        if (!(parseFloat(a.value) > 0)) return say("Enter an amount above zero.");
         const r = await rpc("kid_move", {p_kid:S.kid.id, p_pin:S.kidPin, p_from:f.value, p_to:t.value, p_amount:parseFloat(a.value)});
         if (!r.ok) return say(errText(r)); S.mode = null; await refreshKid(); say("Moved!", true);
       })}, "Move"))));
